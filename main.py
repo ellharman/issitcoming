@@ -1,10 +1,14 @@
+import json
+import os
+from pprint import pprint
+import sys
+from io import StringIO
 from datetime import datetime
 import logging
 from logging import debug
-import os
-import sys
 import csv
 import requests
+from skyfield.api import EarthSatellite, load, wgs84
 
 
 def sync_satcat_csv():
@@ -54,12 +58,31 @@ def get_celestrak_data_by_satcat_id(satcatId: int, format="TLE"):
     return response.text
 
 
+def create_sat_entity_from_omm_csv(ts, csv_string):
+    f = StringIO(csv_string)
+    data = csv.DictReader(f)
+    sat = [EarthSatellite.from_omm(ts, fields) for fields in data][0]
+    return sat
+
+
+def reverse_geocode(lat, lon):
+    print("Reverse geocoding")
+    api_key = os.environ.get("GEOAPIFY_KEY", "")
+    if len(str(api_key)) == 0:
+        raise Exception("Cannot reverse geocode without a Geoapify API key")
+
+    url = f"https://api.geoapify.com/v1/geocode/reverse?lat={lat}&lon={lon}&apiKey={api_key}"
+    res = requests.get(url)
+    res.raise_for_status()
+    dict = json.loads(res.text)
+    pprint(dict)
+
+
 def main():
     # Setup
     satcatId = int(sys.argv[1])
     log_level = sys.argv[2] if len(sys.argv) > 2 else "DEBUG"
     logging.basicConfig(level=log_level.upper())
-    print(os.environ.get("FORCE_SYNC_SATCAT"))
     print(f"Running issitcoming with satcat ID: {satcatId}")
     sync_satcat_csv()
 
@@ -80,9 +103,15 @@ def main():
                 f"Satellite will decay/decayed out of orbit on {satellite_decay_date}"
             )
 
-    # Get celestrak data in pretty json format
-    celestrak_data = get_celestrak_data_by_satcat_id(satcatId, "2LE")
-    print(celestrak_data)
+    # Skyfield timescale
+    ts = load.timescale()
+
+    omm_csv = get_celestrak_data_by_satcat_id(satcatId, "CSV")
+    sat = create_sat_entity_from_omm_csv(ts, omm_csv)
+    current_geocentric_pos = sat.at(ts.now())
+    lat, lon = wgs84.latlon_of(current_geocentric_pos)
+
+    reverse_geocode(lat.degrees, lon.degrees)
 
 
 if __name__ == "__main__":
