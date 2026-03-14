@@ -7,3 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "requests>=2.32.5",
 ]
+license = "MIT"
+license-files = [
+    "LICENSE.txt",
+]
