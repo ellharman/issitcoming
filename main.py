@@ -65,6 +65,13 @@ def create_sat_entity_from_omm_csv(ts, csv_string):
     return sat
 
 
+def postcode_to_latlon(postcode):
+    res = requests.get(f"https://api.postcodes.io/postcodes/{postcode}")
+    res.raise_for_status()
+    data = res.json()
+    return data["result"]["latitude"], data["result"]["longitude"]
+
+
 def reverse_geocode(lat, lon):
     print("Reverse geocoding")
     api_key = os.environ.get("GEOAPIFY_KEY", "")
@@ -78,16 +85,62 @@ def reverse_geocode(lat, lon):
     pprint(dict)
 
 
+def lat_lon_at_ts(sat: EarthSatellite, ts, offset=0):
+    geocentric_post = sat.at(ts.now() + offset)
+    lat, lon = wgs84.latlon_of(geocentric_post)
+    return (lat.degrees, lon.degrees)
+
+
+def find_visible_passes(sat: EarthSatellite, location, eph, ts, hours_ahead=6):
+    t0 = ts.now()
+    t1 = ts.now() + (hours_ahead / 24)
+
+    # Find rise/culmination/set events above 20°
+    t, events = sat.find_events(location, t0, t1, altitude_degrees=20)
+    # events: 0 = rise, 1 = culmination (max elevation), 2 = set
+
+    event_labels = ["rise", "peak", "set"]
+    passes = []
+    current_pass = {}
+
+    for ti, event in zip(t, events):
+        name = event_labels[event]
+        difference = sat - location
+        topocentric = difference.at(ti)
+        alt, az, _ = topocentric.altaz()
+
+        sat_sunlit = sat.at(ti).is_sunlit(eph)
+        observer_dark = not location.at(ti).is_sunlit(eph)
+        visible = sat_sunlit and observer_dark
+
+        current_pass[name] = {
+            "time": ti.utc_iso(),
+            "alt": round(alt.degrees, 1),
+            "az": round(az.degrees, 1),
+            "visible": visible,
+        }
+
+        if name == "set":
+            passes.append(current_pass)
+            current_pass = {}
+
+    return passes
+
+
 def main():
     # Setup
-    satcatId = int(sys.argv[1])
-    log_level = sys.argv[2] if len(sys.argv) > 2 else "DEBUG"
+    satcat_id = int(sys.argv[1])
+    user_lat = float(sys.argv[2])
+    user_lon = float(sys.argv[3])
+    log_level = sys.argv[4] if len(sys.argv) > 4 else "INFO"
     logging.basicConfig(level=log_level.upper())
-    print(f"Running issitcoming with satcat ID: {satcatId}")
+    print(f"Running with satcat ID: {satcat_id}")
     sync_satcat_csv()
+    ephemeris = load("de421.bsp")
+    ts = load.timescale()
 
     # Get satcat entry
-    satcat_entry = find_satcat_entry_by_id(satcatId)
+    satcat_entry = find_satcat_entry_by_id(satcat_id)
 
     # Show some basic information about the satellite
     if satcat_entry:
@@ -103,15 +156,15 @@ def main():
                 f"Satellite will decay/decayed out of orbit on {satellite_decay_date}"
             )
 
-    # Skyfield timescale
-    ts = load.timescale()
-
-    omm_csv = get_celestrak_data_by_satcat_id(satcatId, "CSV")
+    # Init the satellite
+    omm_csv = get_celestrak_data_by_satcat_id(satcat_id, "CSV")
     sat = create_sat_entity_from_omm_csv(ts, omm_csv)
-    current_geocentric_pos = sat.at(ts.now())
-    lat, lon = wgs84.latlon_of(current_geocentric_pos)
 
-    reverse_geocode(lat.degrees, lon.degrees)
+    passes = find_visible_passes(
+        sat, wgs84.latlon(user_lat, user_lon), ephemeris, ts, 6
+    )
+
+    pprint(passes)
 
 
 if __name__ == "__main__":

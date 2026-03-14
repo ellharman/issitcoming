@@ -12,6 +12,7 @@ wheels/
 
 # Pulled data
 satcat.csv
+de421.bsp
 
 # Secrets
 .env
